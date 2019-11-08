@@ -811,8 +811,31 @@ static void *dongle_thread_fn(void *arg)
 	return 0;
 }
 
+static int squelch_to_outside(int squelch_state)
+{
+   FILE *sq_file;
+   sq_file=fopen ("sq_state.txt","w");
+
+   if (sq_file == NULL)
+   {
+       fprintf(stderr, "Failed to open sq_state.txt\n");
+       return 1;
+   }
+   if (squelch_state == 0) fprintf (sq_file,"NO CARRIER");
+       else fprintf (sq_file,"CARRIER");
+   
+   //fprintf(stderr, "SQ saved to sq_state.txt\n");
+
+   fclose (sq_file);
+   //fprintf(stderr, "File close - sq_state.txt\n");
+
+   return 0;
+}
+
 static void *demod_thread_fn(void *arg)
 {
+        static int sqoff_was_save = 0;   // 0 - not save, 1 - have been save
+        static int sqon_was_save = 0;   // 0 - not save, 1 - have been save
 	struct demod_state *d = arg;
 	struct output_state *o = d->output_target;
 	while (!do_exit) {
@@ -826,8 +849,20 @@ static void *demod_thread_fn(void *arg)
 		if (d->squelch_level && d->squelch_hits > d->conseq_squelch) {
 			d->squelch_hits = d->conseq_squelch + 1;  /* hair trigger */
 			safe_cond_signal(&controller.hop, &controller.hop_m);
+                        if (sqoff_was_save == 0)
+                        {
+                            if (squelch_to_outside(0) == 1) do_exit = 1;
+                            sqoff_was_save = 1;
+                            sqon_was_save = 0;
+                        }
 			continue;
 		}
+                if (sqon_was_save == 0)
+                {
+                    if (squelch_to_outside(1) == 1) do_exit = 1;
+                    sqon_was_save = 1;
+                    sqoff_was_save = 0;
+                }
 		pthread_rwlock_wrlock(&o->rw);
 		memcpy(o->result, d->result, 2*d->result_len);
 		o->result_len = d->result_len;
@@ -1048,7 +1083,6 @@ int main(int argc, char **argv)
 	demod_init(&demod);
 	output_init(&output);
 	controller_init(&controller);
-
 	while ((opt = getopt(argc, argv, "d:f:g:s:b:l:o:t:r:p:E:F:A:M:hT")) != -1) {
 		switch (opt) {
 		case 'd':
@@ -1153,7 +1187,6 @@ int main(int argc, char **argv)
 			break;
 		}
 	}
-
 	/* quadruple sample_rate to limit to Δθ to ±π/2 */
 	demod.rate_in *= demod.post_downsample;
 
@@ -1233,13 +1266,12 @@ int main(int argc, char **argv)
 
 	/* Reset endpoint before we start reading from it (mandatory) */
 	verbose_reset_buffer(dongle.dev);
-
 	pthread_create(&controller.thread, NULL, controller_thread_fn, (void *)(&controller));
 	usleep(100000);
 	pthread_create(&output.thread, NULL, output_thread_fn, (void *)(&output));
 	pthread_create(&demod.thread, NULL, demod_thread_fn, (void *)(&demod));
 	pthread_create(&dongle.thread, NULL, dongle_thread_fn, (void *)(&dongle));
-
+        
 	while (!do_exit) {
 		usleep(100000);
 	}
